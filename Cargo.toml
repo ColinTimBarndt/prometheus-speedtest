@@ -1,0 +1,44 @@
+[package]
+name = "prometheus-speedtest"
+version = "0.1.0"
+edition = "2021"
+authors = ["Colin Tim Barndt"]
+license = "GPL-3.0"
+
+categories = ["web-programming::http-server"]
+keywords = ["speedtest", "ping", "prometheus", "telemetry", "metrics"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+accept-header = "0.2.3"
+axum = { version = "0.7.5", default-features = false, features = [
+    "http1",
+    "tokio",
+    "tracing",
+] }
+clap = { version = "4.5.4", features = ["derive"] }
+hdrhistogram = "7.5.4"
+hickory-resolver = { version = "0.24.0", features = ["system-config"] }
+http = "1.1.0"
+humantime-serde = "1.1.1"
+lazy_static = "1.4.0"
+linked-hash-map = "0.5.6"
+mime = "0.3.17"
+rand = "0.8.5"
+reqwest = { version = "0.12.2", features = ["stream"] }
+serde = { version = "1.0.197", features = ["derive"] }
+serde_json = "1.0.115"
+surge-ping = "0.8.1"
+thiserror = "1.0.58"
+tokio = { version = "1.37.0", features = [
+    "net",
+    "macros",
+    "signal",
+    "rt-multi-thread",
+] }
+tokio-stream = "0.1.15"
+toml = "0.8.12"
+tracing = "0.1.40"
+tracing-subscriber = "0.3.18"
+typed-arena = "2.0.2"
