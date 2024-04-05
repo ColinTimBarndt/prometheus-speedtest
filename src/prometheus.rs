@@ -1,5 +1,7 @@
 use std::{
+    collections::HashMap,
     fmt::{self, Debug, Display, Write},
+    mem,
     time::SystemTime,
 };
 
@@ -7,14 +9,13 @@ mod go_floats;
 mod strings;
 
 pub use go_floats::*;
-use linked_hash_map::LinkedHashMap;
 pub use strings::*;
 use typed_arena::Arena;
 
 pub struct ExpositionBuilder<'a> {
     alloc: &'a Arena<u8>,
     buffer: String,
-    entries: LinkedHashMap<&'a PName, MetricGroup<'a>>,
+    entries: HashMap<&'a PName, MetricGroup<'a>>,
     pub labels: LabelBuilder,
     pub name: PNameBuilder,
 }
@@ -30,7 +31,7 @@ impl<'a> ExpositionBuilder<'a> {
         Self {
             alloc,
             buffer: String::new(),
-            entries: LinkedHashMap::new(),
+            entries: HashMap::new(),
             labels: LabelBuilder::new(),
             name: PNameBuilder::new(),
         }
@@ -67,7 +68,10 @@ impl<'a> ExpositionBuilder<'a> {
     ) -> R {
         self.name.push(metric_suffix);
 
-        if !self.entries.contains_key(self.name.as_ref()) {
+        let group_name = if let Some((key, _)) = self.entries.get_key_value(self.name.as_ref()) {
+            key
+        } else {
+            let group_name = self.alloc_pname(self.name.as_ref());
             let metric_name = self.name.as_ref();
             self.buffer.clear();
             write!(self.buffer, "# HELP {metric_name} ").unwrap();
@@ -87,11 +91,17 @@ impl<'a> ExpositionBuilder<'a> {
                 help: self.alloc.alloc_str(&self.buffer[..]),
                 lines: Vec::new(),
             };
-            self.entries
-                .insert(self.alloc_pname(self.name.as_ref()), group);
-        }
+            self.entries.insert(group_name, group);
+            group_name
+        };
 
-        let r = closure(ExpositionMetricBuilder { inner: self });
+        let saved_name = mem::take(&mut self.name);
+        // Only store added suffixes
+        let r = closure(ExpositionMetricBuilder {
+            inner: self,
+            group_name,
+        });
+        self.name = saved_name;
         self.name.pop();
         r
     }
@@ -101,13 +111,19 @@ impl<'a> ExpositionBuilder<'a> {
     }
 }
 
-impl Display for ExpositionBuilder<'_> {
+impl<'s, 'a> Display for ExpositionBuilder<'a>
+where
+    Self: 's,
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (name, group) in self
+        let mut sorted: Vec<_> = self
             .entries
             .iter()
             .filter(|(_, group)| !group.lines.is_empty())
-        {
+            .map(|(k, v)| (*k, v))
+            .collect();
+        sorted.sort_unstable_by_key(|(k, _)| *k);
+        for (name, group) in sorted {
             f.write_str(group.help)?;
             for line in &group.lines {
                 f.write_str(name)?;
@@ -120,12 +136,15 @@ impl Display for ExpositionBuilder<'_> {
 
 pub struct ExpositionMetricBuilder<'a, 'b> {
     inner: &'b mut ExpositionBuilder<'a>,
+    group_name: &'a PName,
 }
 
 impl ExpositionMetricBuilder<'_, '_> {
     #[inline]
     pub fn add_line(&mut self, data: &(impl SerializeGoFloat + ?Sized), at: Option<SystemTime>) {
         self.inner.buffer.clear();
+        // Note that this is only the suffix being pushed, if any
+        self.inner.buffer.push_str(self.inner.name.as_ref());
         write!(self.inner.buffer, "{} ", self.inner.labels).unwrap();
         data.serialize_go_float(&mut self.inner.buffer).unwrap();
         if let Some(at) = at {
@@ -151,6 +170,8 @@ impl ExpositionMetricBuilder<'_, '_> {
         at: Option<SystemTime>,
     ) {
         self.inner.buffer.clear();
+        // Note that this is only the suffix being pushed, if any
+        self.inner.buffer.push_str(self.inner.name.as_ref());
         self.inner.with_label(label, value, |builder| {
             write!(builder.buffer, "{} ", builder.labels).unwrap();
         });
@@ -172,17 +193,8 @@ impl ExpositionMetricBuilder<'_, '_> {
     #[inline]
     fn add_line_entry(&mut self) {
         let line = self.inner.alloc.alloc_str(&self.inner.buffer[..]);
-        if let Some(existing) = self.inner.entries.get_mut(self.inner.name.as_ref()) {
-            existing.lines.push(line);
-        } else {
-            self.inner.entries.insert(
-                self.inner.alloc_pname(self.inner.name.as_ref()),
-                MetricGroup {
-                    help: "",
-                    lines: vec![line],
-                },
-            );
-        }
+        let existing = self.inner.entries.get_mut(self.group_name).unwrap();
+        existing.lines.push(line);
     }
 
     #[inline]
