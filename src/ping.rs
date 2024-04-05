@@ -182,7 +182,7 @@ impl PingResult {
                 if let Some(error) = &self.error {
                     builder.add_metric(
                         PName::new("ping_error").unwrap(),
-                        MetricType::Counter,
+                        MetricType::Gauge,
                         "ping error",
                         |mut builder| {
                             builder.add_line_labeled(
@@ -244,20 +244,12 @@ fn serialize_error_kind<S: Serializer>(
     ser.serialize_str(&kind.to_string())
 }
 
-/*
-fn serialize_ping_sequence<S: Serializer>(
-    seq: &PingSequence,
-    ser: S,
-) -> Result<<S as Serializer>::Ok, <S as Serializer>::Error> {
-    ser.serialize_u16(seq.into_u16())
-}
-*/
-
 #[derive(Debug, Clone, Serialize)]
 pub struct PingSummary {
     pub quantiles: Vec<(f64, f32)>,
     pub mean_ms: f32,
     pub stddev: f32,
+    pub sum: f32,
     pub count: usize,
     pub loss_percent: f32,
     #[serde(serialize_with = "serialize_error_kind_map")]
@@ -313,6 +305,7 @@ impl PingSummary {
                 quantiles: Vec::new(),
                 mean_ms: f32::NAN,
                 stddev: f32::NAN,
+                sum: f32::NAN,
                 count: 0,
                 loss_percent: 1.,
             };
@@ -324,7 +317,8 @@ impl PingSummary {
         }
         samples.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
         let n = samples.len();
-        let mean_ms = samples.iter().sum::<f32>() / (n as f32);
+        let sum = samples.iter().sum();
+        let mean_ms = sum / (n as f32);
         Self {
             quantiles: quantiles
                 .iter()
@@ -338,6 +332,7 @@ impl PingSummary {
                 .sum::<f32>()
                 .div(n as f32)
                 .sqrt(),
+            sum,
             count: n,
             loss_percent: lost_packets as f32 / total_packets as f32,
             errors: error_buckets,
@@ -358,6 +353,9 @@ impl PingSummary {
                         None,
                     );
                 }
+                builder.with_name(PName::SUFFIX_SUM, |builder| {
+                    builder.add_line(&self.sum, None);
+                });
                 builder.with_name(PName::SUFFIX_COUNT, |builder| {
                     builder.add_line(&self.count, None);
                 });
@@ -387,7 +385,7 @@ impl PingSummary {
 
         builder.add_metric(
             PName::new("ping_errors").unwrap(),
-            MetricType::Counter,
+            MetricType::Gauge,
             "number of ping errors",
             |mut builder| {
                 for (kind, count) in &self.errors {

@@ -35,6 +35,7 @@ pub struct SpeedtestSummary {
     pub quantiles: Vec<(f64, u64)>,
     pub mean: f64,
     pub stddev: f64,
+    pub sum: u64,
     pub count: usize,
 }
 
@@ -53,6 +54,7 @@ impl SpeedtestSummary {
                 .collect(),
             mean: hist.mean(),
             stddev: hist.stdev(),
+            sum: rates.iter().sum(),
             count: rates.len(),
         }
     }
@@ -71,6 +73,9 @@ impl SpeedtestSummary {
                         None,
                     );
                 }
+                builder.with_name(PName::SUFFIX_SUM, |builder| {
+                    builder.add_line(&self.sum, None);
+                });
                 builder.with_name(PName::SUFFIX_COUNT, |builder| {
                     builder.add_line(&self.count, None);
                 });
