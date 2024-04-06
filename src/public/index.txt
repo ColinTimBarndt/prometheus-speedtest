@@ -1,0 +1,9 @@
+┌─────────────────────────────┐
+│          Speedtest          │
+├─────────────────────────────┤
+│ - /ping                     │
+│ - /speedtest                │
+│                             │
+│ Created by Colin Tim Barndt │
+│ <contact@colintimbarndt.de> │
+└─────────────────────────────┘

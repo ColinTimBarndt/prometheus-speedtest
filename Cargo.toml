@@ -23,8 +23,8 @@ hickory-resolver = { version = "0.24.0", features = ["system-config"] }
 http = "1.1.0"
 humantime-serde = "1.1.1"
 lazy_static = "1.4.0"
-linked-hash-map = "0.5.6"
 mime = "0.3.17"
+palette = { version = "0.7.5", default-features = false, features = ["std"] }
 rand = "0.8.5"
 reqwest = { version = "0.12.2", features = ["stream"] }
 serde = { version = "1.0.197", features = ["derive"] }
