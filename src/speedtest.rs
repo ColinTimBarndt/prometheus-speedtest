@@ -33,7 +33,7 @@ impl SpeedtestProvider {
 #[derive(Debug, Serialize)]
 pub struct SpeedtestSummary {
     pub quantiles: Vec<(f64, u64)>,
-    pub mean: f64,
+    pub mean: u64,
     pub stddev: f64,
     pub sum: u64,
     pub count: usize,
@@ -52,7 +52,7 @@ impl SpeedtestSummary {
                 .cloned()
                 .map(|q| (q, hist.value_at_quantile(q)))
                 .collect(),
-            mean: hist.mean(),
+            mean: hist.mean() as u64,
             stddev: hist.stdev(),
             sum: rates.iter().sum(),
             count: rates.len(),
