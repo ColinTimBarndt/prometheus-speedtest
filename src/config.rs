@@ -8,7 +8,10 @@ use std::{
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 
-use crate::{ping::PingTarget, speedtest::SpeedtestProvider};
+use crate::{
+    ping::PingTarget,
+    speedtest::{http::HttpSpeedtestProvider, StandardSpeedtestProvider},
+};
 
 pub(crate) fn load_config() -> io::Result<Config> {
     let args = Args::parse();
@@ -18,12 +21,17 @@ pub(crate) fn load_config() -> io::Result<Config> {
         std::process::exit(0);
     }
 
-    let config = if let Some(path) = &args.config {
+    let mut config = if let Some(path) = &args.config {
         toml::from_str(&fs::read_to_string(path)?)
             .map_err(|error| io::Error::new(io::ErrorKind::Other, error))?
     } else {
         Config::default()
     };
+
+    config
+        .speedtest
+        .quantiles
+        .sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
 
     Ok(config)
 }
@@ -99,22 +107,25 @@ impl Default for PingConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub(crate) struct SpeedtestConfig {
-    pub provider: SpeedtestProvider,
-    #[serde(with = "humantime_serde")]
-    pub download_duration: Duration,
-    #[serde(with = "humantime_serde")]
-    pub upload_duration: Duration,
-    pub upload_chunk_size: usize,
+    pub provider: StandardSpeedtestProvider,
     pub quantiles: Vec<f64>,
 }
 
 impl Default for SpeedtestConfig {
     fn default() -> Self {
         Self {
-            provider: SpeedtestProvider::Vodafone,
-            download_duration: Duration::from_secs(30),
-            upload_duration: Duration::from_secs(30),
-            upload_chunk_size: 1_000_000,
+            provider: StandardSpeedtestProvider::Http(HttpSpeedtestProvider {
+                download_endpoint:
+                    "https://speedtest-64.speedtest.vodafone-ip.de/data.zero.bin.512M"
+                        .parse()
+                        .unwrap(),
+                upload_endpoint: "https://speedtest-64.speedtest.vodafone-ip.de/empty.txt"
+                    .parse()
+                    .unwrap(),
+                download_duration: Duration::from_secs(30),
+                upload_duration: Duration::from_secs(30),
+                upload_chunk_size: 1_000_000,
+            }),
             quantiles: vec![0., 0.25, 0.5, 0.75, 0.9, 0.99, 1.],
         }
     }

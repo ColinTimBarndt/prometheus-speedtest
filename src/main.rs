@@ -22,8 +22,8 @@ use mime::{
 };
 use rand::Rng;
 use serde::Serialize;
-use speedtest::SpeedtestSummary;
-use tokio::net::TcpListener;
+use speedtest::{SpeedtestProvider, SpeedtestSummary};
+use tokio::{net::TcpListener, task};
 use tracing::{info, Level};
 use typed_arena::Arena;
 
@@ -271,25 +271,28 @@ async fn get_speedtest(State(config): State<Arc<Config>>, headers: HeaderMap) ->
         }
     };
 
-    let download_data = match config
-        .speedtest
-        .provider
-        .measure_download(config.clone())
-        .await
-    {
-        Ok(rates) => SpeedtestSummary::digest_data(rates, &config.speedtest.quantiles),
+    let download_data = match config.speedtest.provider.measure_download().await {
+        Ok(rates) => {
+            let config = config.clone();
+            task::spawn_blocking(move || {
+                SpeedtestSummary::digest_data(rates, &config.speedtest.quantiles)
+            })
+        }
         Err(error) => return error_to_500(&error),
     };
 
-    let upload_data = match config
-        .speedtest
-        .provider
-        .measure_upload(config.clone())
-        .await
-    {
-        Ok(rates) => SpeedtestSummary::digest_data(rates, &config.speedtest.quantiles),
+    let upload_data = match config.speedtest.provider.measure_upload().await {
+        Ok(rates) => {
+            //let config = config.clone();
+            task::spawn_blocking(move || {
+                SpeedtestSummary::digest_data(rates, &config.speedtest.quantiles)
+            })
+        }
         Err(error) => return error_to_500(&error),
     };
+
+    let download_data = download_data.await.unwrap();
+    let upload_data = upload_data.await.unwrap();
 
     let mut response = String::new();
     match (response_type.type_(), response_type.subtype()) {
