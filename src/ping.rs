@@ -71,15 +71,22 @@ async fn sample_pings(
     if samples == 0 {
         return (Vec::new(), Vec::new());
     }
-    let client = surge_ping::Client::new(
+    let client = match surge_ping::Client::new(
         &surge_ping::ConfigBuilder::default()
             .kind(match &addr {
                 IpAddr::V4(_) => surge_ping::ICMP::V4,
                 IpAddr::V6(_) => surge_ping::ICMP::V6,
             })
             .build(),
-    )
-    .unwrap();
+    ) {
+        Ok(c) => c,
+        Err(error) => {
+            return (
+                Vec::new(),
+                vec![PingErrorKind::IOError { kind: error.kind() }],
+            );
+        }
+    };
 
     let mut set = JoinSet::<(usize, Result<(IcmpPacket, Duration), SurgeError>)>::new();
     for seq in 0.. {
@@ -183,6 +190,8 @@ pub enum PingErrorKind {
     NetworkError,
     #[error("Multiple identical request")]
     IdenticalRequests,
+    #[error("Client destroyed")]
+    ClientDestroyed,
 }
 
 impl From<SurgeError> for PingErrorKind {
@@ -195,7 +204,7 @@ impl From<SurgeError> for PingErrorKind {
             SurgeError::EchoRequestPacket => Self::EchoRequestPacket,
             SurgeError::NetworkError => Self::NetworkError,
             SurgeError::IdenticalRequests { .. } => Self::IdenticalRequests,
-            SurgeError::ClientDestroyed => todo!(),
+            SurgeError::ClientDestroyed => Self::ClientDestroyed,
         }
     }
 }
@@ -278,7 +287,7 @@ impl PingSummary {
         for sample in &samples {
             hist += (*sample * 16.).round() as u64;
         }
-        samples.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        samples.sort_unstable_by(|a, b| a.total_cmp(&b));
         let n = samples.len();
         let sum = samples.iter().sum();
         let mean_ms = sum / (n as f64);
