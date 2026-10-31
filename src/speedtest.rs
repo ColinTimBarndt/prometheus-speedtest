@@ -1,22 +1,41 @@
 use std::{
-    future::Future,
     iter::Sum,
     ops::{self, Div},
-    pin::Pin,
+    sync::Arc,
 };
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::prometheus::{ExpositionBuilder, MetricType, PName};
+use crate::state::AppState;
 
 use self::http::HttpSpeedtestProvider;
 
 pub mod http;
+mod prometheus;
+
+pub(crate) async fn perform_speedtest(state: Arc<AppState>) -> Vec<SpeedtestResult> {
+    let mut measurements = Vec::new();
+    for provider in &state.config.speedtest.providers {
+        measurements.push(provider.measure().await);
+    }
+    measurements
+        .into_iter()
+        .map(|measurements| {
+            SpeedtestResult::digest_measurements(measurements, &state.config.speedtest.quantiles)
+        })
+        .collect()
+}
 
 pub struct SpeedtestData {
     pub samples: Vec<SpeedtestSample>,
     pub total: SpeedtestSample,
+}
+
+pub struct SpeedtestMeasurements {
+    pub target: String,
+    pub up: Result<SpeedtestData, String>,
+    pub down: Result<SpeedtestData, String>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -27,11 +46,7 @@ pub struct SpeedtestSample {
 
 impl SpeedtestSample {
     /// Bits per second
-    pub fn bps(&self) -> i64 {
-        (self.bytes / self.seconds) as i64 * 8
-    }
-
-    pub fn bps_f64(&self) -> f64 {
+    pub fn bps(&self) -> f64 {
         self.bytes / self.seconds * 8.
     }
 }
@@ -65,47 +80,61 @@ impl Sum for SpeedtestSample {
 
 #[async_trait]
 pub trait SpeedtestProvider: Serialize + Deserialize<'static> + 'static {
-    async fn measure_download(&self) -> reqwest::Result<SpeedtestData>;
-    async fn measure_upload(&self) -> reqwest::Result<SpeedtestData>;
+    async fn measure(&self) -> SpeedtestMeasurements;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum StandardSpeedtestProvider {
     Http(HttpSpeedtestProvider),
 }
 
+#[async_trait]
 impl SpeedtestProvider for StandardSpeedtestProvider {
-    fn measure_download<'s, 'out>(
-        &'s self,
-    ) -> Pin<Box<dyn Future<Output = reqwest::Result<SpeedtestData>> + Send + 'out>>
-    where
-        's: 'out,
-        Self: 'out,
-    {
+    async fn measure(&self) -> SpeedtestMeasurements {
         match self {
-            Self::Http(p) => p.measure_download(),
+            Self::Http(p) => p.measure(),
         }
+        .await
     }
+}
 
-    fn measure_upload<'s, 'out>(
-        &'s self,
-    ) -> Pin<Box<dyn Future<Output = reqwest::Result<SpeedtestData>> + Send + 'out>>
-    where
-        's: 'out,
-        Self: 'out,
-    {
-        match self {
-            Self::Http(p) => p.measure_upload(),
+#[derive(Debug, Serialize)]
+pub struct SpeedtestResult {
+    pub target: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub up_summary: Option<SpeedtestSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub up_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub down_summary: Option<SpeedtestSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub down_error: Option<String>,
+}
+
+impl SpeedtestResult {
+    pub fn digest_measurements(measurements: SpeedtestMeasurements, quantiles: &[f64]) -> Self {
+        let [(up_summary, up_error), (down_summary, down_error)] =
+            [measurements.up, measurements.down].map(|r| match r {
+                Ok(d) => (Some(SpeedtestSummary::digest_data(d, quantiles)), None),
+                Err(e) => (None, Some(e)),
+            });
+        Self {
+            target: measurements.target,
+            up_summary,
+            up_error,
+            down_summary,
+            down_error,
         }
     }
 }
 
 #[derive(Debug, Serialize)]
 pub struct SpeedtestSummary {
-    pub quantiles: Vec<(f64, u64)>,
-    pub mean: u64,
+    pub quantiles: Vec<(f64, f64)>,
+    pub mean: f64,
     pub stddev: f64,
-    pub sum: u64,
+    pub sum: f64,
     pub count: usize,
 }
 
@@ -114,7 +143,7 @@ impl SpeedtestSummary {
         SpeedtestData { mut samples, total }: SpeedtestData,
         quantiles: &[f64],
     ) -> Self {
-        samples.sort_unstable_by_key(|d| d.bps());
+        samples.sort_unstable_by(|a, b| a.bps().total_cmp(&b.bps()));
 
         let mut quantiles_map = Vec::with_capacity(quantiles.len());
         if !quantiles.is_empty() && total.seconds > 0. {
@@ -150,11 +179,10 @@ impl SpeedtestSummary {
         }
 
         let mean = total.bps();
-        let meanf = total.bps_f64();
         let stddev = samples
             .iter()
             .map(|x| {
-                let diff = meanf - x.bps_f64();
+                let diff = mean - x.bps();
                 x.seconds * (diff * diff)
             })
             .sum::<f64>()
@@ -168,48 +196,10 @@ impl SpeedtestSummary {
             sum: samples
                 .iter()
                 .map(SpeedtestSample::bps)
-                .sum::<i64>()
+                .sum::<f64>()
                 .try_into()
                 .unwrap(),
             count: samples.len(),
         }
-    }
-
-    pub fn write_prometheus(&self, builder: &mut ExpositionBuilder) {
-        builder.add_metric(
-            PName::new("network_speed_bps").unwrap(),
-            MetricType::Summary,
-            "network speed in bits per second",
-            |mut builder| {
-                for (quantile, value) in &self.quantiles {
-                    builder.add_line_labeled(
-                        PName::QUANTILE,
-                        quantile.to_string().as_str(),
-                        value,
-                        None,
-                    );
-                }
-                builder.with_name(PName::SUFFIX_SUM, |builder| {
-                    builder.add_line(&self.sum, None);
-                });
-                builder.with_name(PName::SUFFIX_COUNT, |builder| {
-                    builder.add_line(&self.count, None);
-                });
-            },
-        );
-
-        builder.add_metric(
-            PName::new("network_speed_mean_bps").unwrap(),
-            MetricType::Gauge,
-            "mean network speed in bits per second",
-            |mut builder| builder.add_line(&self.mean, None),
-        );
-
-        builder.add_metric(
-            PName::new("network_speed_stddev").unwrap(),
-            MetricType::Gauge,
-            "network speed standard deviation",
-            |mut builder| builder.add_line(&self.stddev, None),
-        );
     }
 }

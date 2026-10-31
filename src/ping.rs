@@ -1,12 +1,8 @@
+mod prometheus;
+
 use core::fmt;
 use std::{
-    collections::HashMap,
-    fmt::Display,
-    io,
-    net::IpAddr,
-    ops::{DerefMut, Div},
-    sync::Arc,
-    time::Duration,
+    collections::HashMap, fmt::Display, io, net::IpAddr, ops::Div, sync::Arc, time::Duration,
 };
 
 use hdrhistogram::Histogram;
@@ -15,61 +11,55 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize, Serializer};
 use surge_ping::{IcmpPacket, PingIdentifier, PingSequence, SurgeError};
 use thiserror::Error;
-use tokio::{sync::Mutex, task::JoinSet};
+use tokio::task::JoinSet;
 
-use crate::{
-    config::Config,
-    prometheus::{ExpositionBuilder, MetricType, PName},
-    Resolver,
-};
+use crate::{Resolver, state::AppState};
 
-pub(crate) async fn perform_ping(config: Arc<Config>) -> Result<Vec<PingResult>, ResolveError> {
-    let resolver = Resolver::tokio_from_system_conf()?;
-    let resolver = Arc::new(Mutex::new(resolver));
-
-    let mut payload = vec![0; config.ping.payload_size].into_boxed_slice();
+pub(crate) async fn perform_ping(state: Arc<AppState>) -> Vec<PingResult> {
+    let mut payload = vec![0; state.config.ping.payload_size].into_boxed_slice();
     rand::thread_rng().fill_bytes(&mut payload[..]);
     let payload = Arc::new(payload);
 
     let mut set = JoinSet::<PingResult>::new();
-    for target in config.ping.servers.iter().cloned() {
-        let resolver = resolver.clone();
+    for target in state.config.ping.servers.iter().cloned() {
         let payload = payload.clone();
-        let config = config.clone();
+        let state = state.clone();
         set.spawn(async move {
-            let mut resolver = resolver.lock().await;
-            let addr = match target.resolve(resolver.deref_mut()).await {
+            let addr = match target.resolve(&state.resolver).await {
                 Ok(addr) => addr,
                 Err(err) => {
                     return PingResult {
                         target,
                         summary: None,
                         error: Some(err.to_string()),
-                    }
+                    };
                 }
             };
-            drop(resolver);
-            let (samples, errors) =
-                sample_pings(addr, config.ping.samples, config.ping.delay, payload).await;
+            let (samples, errors) = sample_pings(
+                addr,
+                state.config.ping.samples,
+                state.config.ping.delay,
+                payload,
+            )
+            .await;
             PingResult {
                 target,
                 summary: Some(PingSummary::digest_data(
                     samples,
                     errors,
-                    &config.ping.quantiles,
+                    &state.config.ping.quantiles,
                 )),
                 error: None,
             }
         });
     }
 
-    let mut results = Vec::with_capacity(config.ping.servers.len());
+    let mut results = Vec::with_capacity(state.config.ping.servers.len());
     while let Some(join_result) = set.join_next().await {
         let result = join_result.unwrap();
         results.push(result);
     }
-
-    Ok(results)
+    results
 }
 
 async fn sample_pings(
@@ -77,15 +67,14 @@ async fn sample_pings(
     samples: usize,
     delay: Duration,
     payload: Arc<Box<[u8]>>,
-) -> (Vec<f32>, Vec<PingErrorKind>) {
+) -> (Vec<f64>, Vec<PingErrorKind>) {
     if samples == 0 {
         return (Vec::new(), Vec::new());
     }
     let client = surge_ping::Client::new(&surge_ping::ConfigBuilder::default().build()).unwrap();
-    let mut seq = 0;
 
     let mut set = JoinSet::<(usize, Result<(IcmpPacket, Duration), SurgeError>)>::new();
-    loop {
+    for seq in 0.. {
         let mut pinger = client.pinger(addr, PingIdentifier(0)).await;
         let payload = payload.clone();
         set.spawn(async move {
@@ -95,22 +84,20 @@ async fn sample_pings(
             )
         });
 
-        seq += 1;
-
         if seq < samples {
             tokio::time::sleep(delay).await;
         } else {
             break;
         }
     }
-    let mut results = vec![f32::NAN; samples];
+    let mut results = vec![f64::NAN; samples];
     let mut errors = Vec::with_capacity(samples);
 
     while let Some(join_result) = set.join_next().await {
         let result = join_result.unwrap();
         match result {
             (seq, Ok((_packet, duration))) => {
-                results[seq] = duration.as_secs_f32() * 1000.;
+                results[seq] = duration.as_secs_f64() * 1000.;
             }
             (_, Err(err)) => {
                 errors.push(err.into());
@@ -138,7 +125,7 @@ pub enum PingPrepareError {
 }
 
 impl PingTarget {
-    pub async fn resolve(&self, resolver: &mut Resolver) -> Result<IpAddr, PingPrepareError> {
+    pub async fn resolve(&self, resolver: &Resolver) -> Result<IpAddr, PingPrepareError> {
         match self {
             Self::Ip(ip) => Ok(*ip),
             Self::Domain(domain) => resolver
@@ -167,36 +154,6 @@ pub struct PingResult {
     summary: Option<PingSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
-}
-
-impl PingResult {
-    pub fn write_prometheus(&self, builder: &mut ExpositionBuilder) {
-        builder.with_label(
-            PName::new("target").unwrap(),
-            self.target.to_string().as_str(),
-            |builder| {
-                if let Some(summary) = &self.summary {
-                    summary.write_prometheus(builder);
-                }
-
-                if let Some(error) = &self.error {
-                    builder.add_metric(
-                        PName::new("ping_error").unwrap(),
-                        MetricType::Gauge,
-                        "ping error",
-                        |mut builder| {
-                            builder.add_line_labeled(
-                                PName::new("error").unwrap(),
-                                error.as_str(),
-                                &1,
-                                None,
-                            );
-                        },
-                    );
-                }
-            },
-        )
-    }
 }
 
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -233,6 +190,7 @@ impl From<SurgeError> for PingErrorKind {
             SurgeError::EchoRequestPacket => Self::EchoRequestPacket,
             SurgeError::NetworkError => Self::NetworkError,
             SurgeError::IdenticalRequests { .. } => Self::IdenticalRequests,
+            SurgeError::ClientDestroyed => todo!(),
         }
     }
 }
@@ -246,12 +204,12 @@ fn serialize_error_kind<S: Serializer>(
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PingSummary {
-    pub quantiles: Vec<(f64, f32)>,
-    pub mean_ms: f32,
-    pub stddev: f32,
-    pub sum: f32,
+    pub quantiles: Vec<(f64, f64)>,
+    pub mean_ms: f64,
+    pub stddev: f64,
+    pub sum: f64,
     pub count: usize,
-    pub loss_percent: f32,
+    pub loss_percent: f64,
     #[serde(serialize_with = "serialize_error_kind_map")]
     pub errors: HashMap<PingErrorKind, u32>,
 }
@@ -272,7 +230,7 @@ fn serialize_error_kind_map<S: Serializer>(
 
 impl PingSummary {
     pub fn digest_data(
-        mut samples: Vec<f32>,
+        mut samples: Vec<f64>,
         errors: Vec<PingErrorKind>,
         quantiles: &[f64],
     ) -> Self {
@@ -303,9 +261,9 @@ impl PingSummary {
             return Self {
                 errors: error_buckets,
                 quantiles: Vec::new(),
-                mean_ms: f32::NAN,
-                stddev: f32::NAN,
-                sum: f32::NAN,
+                mean_ms: f64::NAN,
+                stddev: f64::NAN,
+                sum: f64::NAN,
                 count: 0,
                 loss_percent: 1.,
             };
@@ -318,85 +276,24 @@ impl PingSummary {
         samples.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
         let n = samples.len();
         let sum = samples.iter().sum();
-        let mean_ms = sum / (n as f32);
+        let mean_ms = sum / (n as f64);
         Self {
             quantiles: quantiles
                 .iter()
                 .cloned()
-                .map(|q| (q, hist.value_at_quantile(q) as f32 / 16.))
+                .map(|q| (q, hist.value_at_quantile(q) as f64 / 16.))
                 .collect(),
             mean_ms,
             stddev: samples
                 .iter()
                 .map(|val| (*val - mean_ms).powi(2))
-                .sum::<f32>()
-                .div(n as f32)
+                .sum::<f64>()
+                .div(n as f64)
                 .sqrt(),
             sum,
             count: n,
-            loss_percent: lost_packets as f32 / total_packets as f32,
+            loss_percent: lost_packets as f64 / total_packets as f64,
             errors: error_buckets,
         }
-    }
-
-    pub fn write_prometheus(&self, builder: &mut ExpositionBuilder) {
-        builder.add_metric(
-            PName::new("ping_ms").unwrap(),
-            MetricType::Summary,
-            "ping to target",
-            |mut builder| {
-                for (quantile, value) in &self.quantiles {
-                    builder.add_line_labeled(
-                        PName::QUANTILE,
-                        quantile.to_string().as_str(),
-                        value,
-                        None,
-                    );
-                }
-                builder.with_name(PName::SUFFIX_SUM, |builder| {
-                    builder.add_line(&self.sum, None);
-                });
-                builder.with_name(PName::SUFFIX_COUNT, |builder| {
-                    builder.add_line(&self.count, None);
-                });
-            },
-        );
-
-        builder.add_metric(
-            PName::new("ping_mean_ms").unwrap(),
-            MetricType::Gauge,
-            "mean ping to target",
-            |mut builder| builder.add_line(&self.mean_ms, None),
-        );
-
-        builder.add_metric(
-            PName::new("ping_stddev").unwrap(),
-            MetricType::Gauge,
-            "ping standard deviation",
-            |mut builder| builder.add_line(&self.stddev, None),
-        );
-
-        builder.add_metric(
-            PName::new("packet_loss").unwrap(),
-            MetricType::Gauge,
-            "packet loss (0 to 1)",
-            |mut builder| builder.add_line(&self.loss_percent, None),
-        );
-
-        builder.add_metric(
-            PName::new("ping_errors").unwrap(),
-            MetricType::Gauge,
-            "number of ping errors",
-            |mut builder| {
-                for (kind, count) in &self.errors {
-                    builder.add_line_labeled(
-                        PName::new("error").unwrap(),
-                        kind.to_string().as_str(),
-                        count,
-                        None,
-                    );
-                }
-            },
-        );
     }
 }

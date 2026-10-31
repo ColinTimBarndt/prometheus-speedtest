@@ -12,10 +12,13 @@ use serde::{Deserialize, Serialize};
 use tokio_stream::Stream;
 use url::Url;
 
+use crate::speedtest::SpeedtestMeasurements;
+
 use super::{SpeedtestData as Data, SpeedtestProvider, SpeedtestSample as Sample};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpSpeedtestProvider {
+    pub target_name: String,
     pub download_endpoint: Url,
     pub upload_endpoint: Url,
     #[serde(with = "humantime_serde")]
@@ -27,17 +30,27 @@ pub struct HttpSpeedtestProvider {
 
 #[async_trait]
 impl SpeedtestProvider for HttpSpeedtestProvider {
-    async fn measure_download(&self) -> reqwest::Result<Data> {
+    async fn measure(&self) -> SpeedtestMeasurements {
         let mut locals = self.prepare_measurements(self.download_duration);
-        self.collect_download_data(&mut locals).await?;
-        Ok(self.finish_measurements(locals))
+        let down = self
+            .collect_download_data(&mut locals)
+            .await
+            .map(|()| self.finish_measurements(locals));
+        locals = self.prepare_measurements(self.upload_duration);
+        let up = self
+            .collect_upload_data(&mut locals)
+            .await
+            .map(|()| self.finish_measurements(locals));
+        SpeedtestMeasurements {
+            target: self.target_name.clone(),
+            up: up.map_err(format_debug),
+            down: down.map_err(format_debug),
+        }
     }
+}
 
-    async fn measure_upload(&self) -> reqwest::Result<Data> {
-        let mut locals = self.prepare_measurements(self.download_duration);
-        self.collect_upload_data(&mut locals).await?;
-        Ok(self.finish_measurements(locals))
-    }
+fn format_debug(error: impl std::fmt::Debug) -> String {
+    format!("{error:?}")
 }
 
 struct MeasurementLocals {
@@ -50,7 +63,7 @@ struct MeasurementLocals {
 }
 
 impl HttpSpeedtestProvider {
-    #[inline(always)]
+    #[inline]
     fn prepare_measurements(&self, duration: Duration) -> MeasurementLocals {
         let start_time = Instant::now();
         let last_chunk_time = start_time;
@@ -66,7 +79,7 @@ impl HttpSpeedtestProvider {
         }
     }
 
-    #[inline(always)]
+    #[inline]
     fn finish_measurements(&self, locals: MeasurementLocals) -> Data {
         Data {
             samples: locals.samples,
@@ -80,7 +93,7 @@ impl HttpSpeedtestProvider {
         }
     }
 
-    #[inline(always)]
+    #[inline]
     async fn collect_download_data(&self, locals: &mut MeasurementLocals) -> reqwest::Result<()> {
         // Averages out spikes
         const MIN_SAMPLE_TIME: Duration = Duration::from_millis(50);
@@ -120,7 +133,7 @@ impl HttpSpeedtestProvider {
         Ok(())
     }
 
-    #[inline(always)]
+    #[inline]
     async fn collect_upload_data(&self, locals: &mut MeasurementLocals) -> reqwest::Result<()> {
         let mut data = vec![0; 256];
         rand::thread_rng().fill_bytes(&mut data);

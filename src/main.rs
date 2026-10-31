@@ -1,41 +1,32 @@
-use std::{
-    error::Error,
-    net::SocketAddr,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{net::SocketAddr, process::ExitCode, sync::Arc, time::Instant};
 
 use axum::{
-    extract::{ConnectInfo, Request, State},
-    middleware::{self, Next},
+    Router,
+    extract::State,
     response::{IntoResponse, Response},
     routing::get,
-    RequestExt, Router,
 };
-use config::{load_config, Config};
+use config::load_config;
 use hickory_resolver::TokioAsyncResolver;
-use http::{header, HeaderMap, StatusCode};
+use http::{HeaderMap, StatusCode, header};
 use lazy_static::lazy_static;
 use mime::{
-    Mime, APPLICATION, APPLICATION_JSON, HTML, JSON, PLAIN, TEXT, TEXT_HTML, TEXT_HTML_UTF_8,
-    TEXT_PLAIN, TEXT_PLAIN_UTF_8,
+    APPLICATION, APPLICATION_JSON, HTML, JSON, Mime, PLAIN, TEXT, TEXT_HTML, TEXT_HTML_UTF_8,
+    TEXT_PLAIN,
 };
-use rand::Rng;
-use serde::Serialize;
-use speedtest::{SpeedtestProvider, SpeedtestSummary};
-use tokio::{net::TcpListener, task};
-use tracing::{info, Level};
-use typed_arena::Arena;
+use tokio::net::TcpListener;
 
 use crate::{
-    ping::perform_ping,
-    prometheus::{ExpositionBuilder, PName},
+    ping::{PingResult, perform_ping},
+    speedtest::{SpeedtestResult, perform_speedtest},
+    state::AppState,
 };
 
 pub mod config;
 pub mod ping;
 pub mod prometheus;
 pub mod speedtest;
+mod state;
 
 lazy_static! {
     static ref TEXT_PLAIN_UTF_8_VERSION_4: Mime =
@@ -45,96 +36,58 @@ lazy_static! {
 pub type Resolver = TokioAsyncResolver;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let config = load_config()?;
+async fn main() -> ExitCode {
     println!("{}", include_str!("startup-notice.txt"));
 
-    {
-        let subscriber = tracing_subscriber::FmtSubscriber::builder()
-            // all spans/events with a level higher than TRACE (e.g, debug, info, warn, etc.)
-            // will be written to stdout.
-            .with_max_level(Level::INFO)
-            // completes the builder.
-            .finish();
-        tracing::subscriber::set_global_default(subscriber)
-            .expect("setting default subscriber failed");
-    }
+    tracing_subscriber::fmt::init();
 
-    let bind_to = (config.server.address, config.server.port);
+    let config = match load_config() {
+        Ok(c) => c,
+        Err(error) => {
+            tracing::error!("Could not load config: {error:?}");
+            return ExitCode::FAILURE;
+        }
+    };
 
-    let app = create_router(Arc::new(config));
+    let resolver = match TokioAsyncResolver::tokio_from_system_conf() {
+        Ok(r) => r,
+        Err(error) => {
+            tracing::error!("Failed to initialize DNS: {error:?}");
+            return ExitCode::FAILURE;
+        }
+    };
 
-    let listener = TcpListener::bind(bind_to).await?;
-    axum::serve(
+    let bind_to = SocketAddr::new(config.server.address, config.server.port);
+
+    let app = create_router(Arc::new(AppState::new(config, resolver)));
+
+    let listener = match TcpListener::bind(bind_to).await {
+        Ok(l) => l,
+        Err(error) => {
+            tracing::error!("Failed binding to {bind_to}: {error:?}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .await?;
-    Ok(())
+    .await
+    {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            tracing::error!("{error:?}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
-fn create_router(config: Arc<Config>) -> Router {
+fn create_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/", get(get_index))
         .route("/ping", get(get_ping))
         .route("/speedtest", get(get_speedtest))
-        .layer(middleware::from_fn(log_traffic))
-        .with_state(config)
-}
-
-async fn log_traffic(mut req: Request, next: Next) -> Response {
-    // Responses usually take a long time, this helps tracking them
-    // Format: \x1b[38;2;{rrr};{ggg};{bbb}m{nnnnnnnn}\x1b[0m => max 31 bytes
-    let mut id = [0; 31];
-    let id = {
-        use palette::{hsl::Hsl, FromColor, Srgb};
-        use std::io::Write;
-        let id_num: u32 = rand::thread_rng().gen();
-        let (r, g, b) =
-            Srgb::from_color(Hsl::new((id_num % 360) as f32, 1., 0.75)).into_components();
-        let mut id_writer = &mut id[..];
-        write!(
-            id_writer,
-            "\x1b[38;2;{r};{g};{b}m{id_num:08X}\x1b[0m",
-            r = (r * 255.) as u8,
-            g = (g * 255.) as u8,
-            b = (b * 255.) as u8
-        )
-        .unwrap();
-        let written = 31 - id_writer.len();
-        // SAFETY: All data was fmt written as valid ASCII
-        unsafe { std::str::from_utf8_unchecked(&id[..written]) }
-    };
-
-    struct Latency(Duration);
-    impl std::fmt::Display for Latency {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            if self.0.as_secs() == 0 {
-                let ns = self.0.subsec_nanos();
-                let ms = ns / 1_000_000;
-                let frac_ms = (ns / 1000) % 1000;
-                write!(f, "{ms}.{frac_ms:03}ms")
-            } else {
-                write!(f, "{:.3}s", self.0.as_secs_f32())
-            }
-        }
-    }
-
-    let ConnectInfo(source) = req
-        .extract_parts::<ConnectInfo<SocketAddr>>()
-        .await
-        .unwrap();
-    let method = req.method();
-    let path = req.uri().path();
-    info!(%id, %method, path, %source, "Request");
-
-    let start = Instant::now();
-    let res = next.run(req).await;
-    let latency = Latency(start.elapsed());
-
-    let status = res.status().as_u16();
-    info!(%id, status, %latency, "Response");
-    res
+        .with_state(state)
 }
 
 async fn get_index(headers: HeaderMap) -> impl IntoResponse {
@@ -179,25 +132,23 @@ async fn get_index(headers: HeaderMap) -> impl IntoResponse {
             StatusCode::OK,
             [(header::CONTENT_TYPE, mime::TEXT_PLAIN_UTF_8.as_ref())],
             include_str!("public/index.ansi.txt"),
-        )
-            .into_response(),
+        ),
 
         (TEXT, PLAIN) => (
             StatusCode::OK,
             [(header::CONTENT_TYPE, mime::TEXT_PLAIN_UTF_8.as_ref())],
             include_str!("public/index.txt"),
-        )
-            .into_response(),
+        ),
 
         (TEXT, HTML) => (
             StatusCode::OK,
             [(header::CONTENT_TYPE, mime::TEXT_HTML_UTF_8.as_ref())],
             include_str!("public/index.html"),
-        )
-            .into_response(),
+        ),
 
         _ => unreachable!(),
     }
+    .into_response()
 }
 
 fn negotiate_prometheus_mime(headers: &HeaderMap) -> Result<Mime, StatusCode> {
@@ -220,38 +171,32 @@ fn negotiate_prometheus_mime(headers: &HeaderMap) -> Result<Mime, StatusCode> {
     Ok(response_type)
 }
 
-async fn get_ping(State(config): State<Arc<Config>>, headers: HeaderMap) -> Response<String> {
+async fn get_ping(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response<String> {
     let response_type = match negotiate_prometheus_mime(&headers) {
         Ok(ty) => ty,
         Err(code) => {
             return Response::builder()
                 .status(code)
                 .body(String::new())
-                .unwrap()
+                .unwrap();
         }
     };
 
-    let data = match perform_ping(config).await {
-        Ok(data) => data,
-        Err(error) => return error_to_500(&error),
+    let state2 = state.clone();
+    let mut ping_state = state2.ping.lock().await;
+    if !ping_state.should_use_cache(state.config.ping.cooldown) {
+        ping_state.metrics = perform_ping(state).await;
+        ping_state.last_measurement = Some(Instant::now());
     };
+    let data = &ping_state.metrics[..];
 
-    let mut response = String::new();
-    match (response_type.type_(), response_type.subtype()) {
-        (TEXT, PLAIN) => {
-            use std::fmt::Write as _;
-            let alloc = Arena::new();
-            let mut builder = ExpositionBuilder::new(&alloc);
-            for result in data {
-                result.write_prometheus(&mut builder);
-            }
-            write!(response, "{builder}").unwrap();
-        }
-        (APPLICATION, JSON) => {
-            response = serde_json::to_string_pretty(&data).unwrap();
-        }
+    let response = match (response_type.type_(), response_type.subtype()) {
+        (TEXT, PLAIN) => ::prometheus::TextEncoder::new()
+            .encode_to_string(&PingResult::range_to_prometheus(&data))
+            .expect("Prometheus encoding"),
+        (APPLICATION, JSON) => serde_json::to_string_pretty(&data).unwrap(),
         _ => unreachable!(),
-    }
+    };
 
     Response::builder()
         .header(header::CONTENT_TYPE, response_type.as_ref())
@@ -260,83 +205,36 @@ async fn get_ping(State(config): State<Arc<Config>>, headers: HeaderMap) -> Resp
         .unwrap()
 }
 
-async fn get_speedtest(State(config): State<Arc<Config>>, headers: HeaderMap) -> Response<String> {
+async fn get_speedtest(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response<String> {
     let response_type = match negotiate_prometheus_mime(&headers) {
         Ok(ty) => ty,
         Err(code) => {
             return Response::builder()
                 .status(code)
                 .body(String::new())
-                .unwrap()
+                .unwrap();
         }
     };
 
-    let download_data = match config.speedtest.provider.measure_download().await {
-        Ok(rates) => {
-            let config = config.clone();
-            task::spawn_blocking(move || {
-                SpeedtestSummary::digest_data(rates, &config.speedtest.quantiles)
-            })
-        }
-        Err(error) => return error_to_500(&error),
+    let state2 = state.clone();
+    let mut speedtest_state = state2.speedtest.lock().await;
+    if !speedtest_state.should_use_cache(state.config.speedtest.cooldown) {
+        speedtest_state.metrics = perform_speedtest(state).await;
+        speedtest_state.last_measurement = Some(Instant::now());
     };
+    let data = &speedtest_state.metrics[..];
 
-    let upload_data = match config.speedtest.provider.measure_upload().await {
-        Ok(rates) => {
-            //let config = config.clone();
-            task::spawn_blocking(move || {
-                SpeedtestSummary::digest_data(rates, &config.speedtest.quantiles)
-            })
-        }
-        Err(error) => return error_to_500(&error),
-    };
-
-    let download_data = download_data.await.unwrap();
-    let upload_data = upload_data.await.unwrap();
-
-    let mut response = String::new();
-    match (response_type.type_(), response_type.subtype()) {
-        (TEXT, PLAIN) => {
-            use std::fmt::Write as _;
-            let alloc = Arena::new();
-            let mut builder = ExpositionBuilder::new(&alloc);
-            let direction = PName::new("direction").unwrap();
-            builder.with_label(direction, "down", |builder| {
-                download_data.write_prometheus(builder);
-            });
-            builder.with_label(direction, "up", |builder| {
-                upload_data.write_prometheus(builder);
-            });
-            write!(response, "{builder}").unwrap();
-        }
-        (APPLICATION, JSON) => {
-            #[derive(Serialize)]
-            struct Data<'a> {
-                down: &'a SpeedtestSummary,
-                up: &'a SpeedtestSummary,
-            }
-
-            response = serde_json::to_string_pretty(&Data {
-                down: &download_data,
-                up: &upload_data,
-            })
-            .unwrap();
-        }
+    let response = match (response_type.type_(), response_type.subtype()) {
+        (TEXT, PLAIN) => ::prometheus::TextEncoder::new()
+            .encode_to_string(&SpeedtestResult::range_to_prometheus(&data))
+            .expect("Prometheus encoding"),
+        (APPLICATION, JSON) => serde_json::to_string_pretty(&data).unwrap(),
         _ => unreachable!(),
-    }
+    };
 
     Response::builder()
         .header(header::CONTENT_TYPE, response_type.as_ref())
         .status(StatusCode::OK)
         .body(response)
-        .unwrap()
-}
-
-#[cold]
-fn error_to_500(error: &dyn Error) -> Response<String> {
-    Response::builder()
-        .header(header::CONTENT_TYPE, TEXT_PLAIN_UTF_8.as_ref())
-        .status(StatusCode::INTERNAL_SERVER_ERROR)
-        .body(error.to_string())
         .unwrap()
 }

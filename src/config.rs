@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ping::PingTarget,
-    speedtest::{http::HttpSpeedtestProvider, StandardSpeedtestProvider},
+    speedtest::{StandardSpeedtestProvider, http::HttpSpeedtestProvider},
 };
 
 pub(crate) fn load_config() -> io::Result<Config> {
@@ -79,6 +79,8 @@ impl Default for ServerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub(crate) struct PingConfig {
+    #[serde(with = "humantime_serde")]
+    pub cooldown: Duration,
     pub servers: Vec<PingTarget>,
     #[serde(with = "humantime_serde")]
     pub delay: Duration,
@@ -90,6 +92,7 @@ pub(crate) struct PingConfig {
 impl Default for PingConfig {
     fn default() -> Self {
         Self {
+            cooldown: Duration::from_mins(5),
             servers: vec![
                 PingTarget::Ip([8, 8, 8, 8].into()),
                 PingTarget::Ip([9, 9, 9, 9].into()),
@@ -107,14 +110,18 @@ impl Default for PingConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub(crate) struct SpeedtestConfig {
-    pub provider: StandardSpeedtestProvider,
+    #[serde(with = "humantime_serde")]
+    pub cooldown: Duration,
+    pub providers: Vec<StandardSpeedtestProvider>,
     pub quantiles: Vec<f64>,
 }
 
 impl Default for SpeedtestConfig {
     fn default() -> Self {
         Self {
-            provider: StandardSpeedtestProvider::Http(HttpSpeedtestProvider {
+            cooldown: Duration::from_mins(5),
+            providers: vec![StandardSpeedtestProvider::Http(HttpSpeedtestProvider {
+                target_name: "Vodafone Germany".to_owned(),
                 download_endpoint:
                     "https://speedtest-64.speedtest.vodafone-ip.de/data.zero.bin.512M"
                         .parse()
@@ -125,7 +132,7 @@ impl Default for SpeedtestConfig {
                 download_duration: Duration::from_secs(30),
                 upload_duration: Duration::from_secs(30),
                 upload_chunk_size: 1_000_000,
-            }),
+            })],
             quantiles: vec![0., 0.25, 0.5, 0.75, 0.9, 0.99, 1.],
         }
     }
