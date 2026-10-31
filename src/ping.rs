@@ -283,7 +283,7 @@ impl PingSummary {
             };
         }
 
-        let mut hist = Histogram::<u16>::new(0).unwrap();
+        let mut hist = Histogram::<u16>::new(3).unwrap();
         for sample in &samples {
             hist += (*sample * 16.).round() as u64;
         }
