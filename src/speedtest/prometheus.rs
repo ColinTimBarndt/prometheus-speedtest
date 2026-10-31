@@ -50,12 +50,14 @@ impl PrometheusMetrics {
     }
 
     pub fn to_vec(self) -> Vec<MetricFamily> {
-        vec![
+        let mut results = vec![
             self.network_speed_bps,
             self.network_speed_mean_bps,
             self.network_speed_stddev,
             self.speedtest_errors,
-        ]
+        ];
+        results.retain(|f| !f.metric.is_empty());
+        results
     }
 
     fn add_result(&mut self, result: &SpeedtestResult) {

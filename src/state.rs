@@ -1,6 +1,5 @@
 use std::time::{Duration, Instant};
 
-use hickory_resolver::TokioAsyncResolver;
 use tokio::sync::Mutex;
 
 use crate::{config::Config, ping::PingResult, speedtest::SpeedtestResult};

@@ -112,6 +112,7 @@ impl Default for PingConfig {
 pub(crate) struct SpeedtestConfig {
     #[serde(with = "humantime_serde")]
     pub cooldown: Duration,
+    #[serde(rename = "provider")]
     pub providers: Vec<StandardSpeedtestProvider>,
     pub quantiles: Vec<f64>,
 }

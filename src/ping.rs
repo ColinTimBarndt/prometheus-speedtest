@@ -19,7 +19,7 @@ pub(crate) async fn perform_ping(state: Arc<AppState>) -> Vec<PingResult> {
     let payload = Arc::new(payload);
 
     let mut set = JoinSet::<PingResult>::new();
-    for target in state.config.ping.servers.iter().cloned() {
+    for (i, target) in state.config.ping.servers.iter().cloned().enumerate() {
         let payload = payload.clone();
         let state = state.clone();
         set.spawn(async move {
@@ -38,6 +38,7 @@ pub(crate) async fn perform_ping(state: Arc<AppState>) -> Vec<PingResult> {
                 state.config.ping.samples,
                 state.config.ping.delay,
                 payload,
+                PingIdentifier(i as u16),
             )
             .await;
             PingResult {
@@ -65,24 +66,30 @@ async fn sample_pings(
     samples: usize,
     delay: Duration,
     payload: Arc<Box<[u8]>>,
+    id: PingIdentifier,
 ) -> (Vec<f64>, Vec<PingErrorKind>) {
     if samples == 0 {
         return (Vec::new(), Vec::new());
     }
-    let client = surge_ping::Client::new(&surge_ping::ConfigBuilder::default().build()).unwrap();
+    let client = surge_ping::Client::new(
+        &surge_ping::ConfigBuilder::default()
+            .kind(match &addr {
+                IpAddr::V4(_) => surge_ping::ICMP::V4,
+                IpAddr::V6(_) => surge_ping::ICMP::V6,
+            })
+            .build(),
+    )
+    .unwrap();
 
     let mut set = JoinSet::<(usize, Result<(IcmpPacket, Duration), SurgeError>)>::new();
     for seq in 0.. {
-        let mut pinger = client.pinger(addr, PingIdentifier(0)).await;
+        let mut pinger = client.pinger(addr, id).await;
         let payload = payload.clone();
         set.spawn(async move {
-            (
-                seq,
-                pinger.ping(PingSequence(seq as u16), &payload[..]).await,
-            )
+            let result = pinger.ping(PingSequence(seq as u16), &payload[..]).await;
+            (seq, result)
         });
-
-        if seq < samples {
+        if seq < samples - 1 {
             tokio::time::sleep(delay).await;
         } else {
             break;

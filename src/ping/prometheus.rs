@@ -52,13 +52,15 @@ impl PrometheusMetrics {
     }
 
     pub fn to_vec(self) -> Vec<MetricFamily> {
-        vec![
+        let mut results = vec![
             self.ping_ms,
             self.ping_mean_ms,
             self.ping_stddev,
             self.packet_loss,
             self.ping_errors,
-        ]
+        ];
+        results.retain(|f| !f.metric.is_empty());
+        results
     }
 
     fn add_result(&mut self, result: &PingResult) {
