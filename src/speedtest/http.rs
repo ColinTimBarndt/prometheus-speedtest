@@ -5,9 +5,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use axum::{async_trait, body::Bytes};
+use async_trait::async_trait;
+use axum::body::Bytes;
 use http::header;
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use tokio_stream::Stream;
 use url::Url;
@@ -136,7 +136,7 @@ impl HttpSpeedtestProvider {
     #[inline]
     async fn collect_upload_data(&self, locals: &mut MeasurementLocals) -> reqwest::Result<()> {
         let mut data = vec![0; 256];
-        rand::thread_rng().fill_bytes(&mut data);
+        rand::fill(&mut data);
         let data = data; // immutable
 
         while let Ok(result) = tokio::time::timeout_at(

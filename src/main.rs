@@ -7,7 +7,6 @@ use axum::{
     routing::get,
 };
 use config::load_config;
-use hickory_resolver::TokioAsyncResolver;
 use http::{HeaderMap, StatusCode, header};
 use lazy_static::lazy_static;
 use mime::{
@@ -33,7 +32,7 @@ lazy_static! {
         "text/plain; version=0.0.4; charset=utf-8".parse().unwrap();
 }
 
-pub type Resolver = TokioAsyncResolver;
+pub type Resolver = hickory_resolver::TokioResolver;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -49,7 +48,7 @@ async fn main() -> ExitCode {
         }
     };
 
-    let resolver = match TokioAsyncResolver::tokio_from_system_conf() {
+    let resolver = match Resolver::builder_tokio().and_then(|b| b.build()) {
         Ok(r) => r,
         Err(error) => {
             tracing::error!("Failed to initialize DNS: {error:?}");

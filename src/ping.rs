@@ -6,8 +6,6 @@ use std::{
 };
 
 use hdrhistogram::Histogram;
-use hickory_resolver::error::ResolveError;
-use rand::RngCore;
 use serde::{Deserialize, Serialize, Serializer};
 use surge_ping::{IcmpPacket, PingIdentifier, PingSequence, SurgeError};
 use thiserror::Error;
@@ -17,7 +15,7 @@ use crate::{Resolver, state::AppState};
 
 pub(crate) async fn perform_ping(state: Arc<AppState>) -> Vec<PingResult> {
     let mut payload = vec![0; state.config.ping.payload_size].into_boxed_slice();
-    rand::thread_rng().fill_bytes(&mut payload[..]);
+    rand::fill(&mut payload[..]);
     let payload = Arc::new(payload);
 
     let mut set = JoinSet::<PingResult>::new();
@@ -119,7 +117,7 @@ pub enum PingTarget {
 #[derive(Debug, Error)]
 pub enum PingPrepareError {
     #[error("{0}")]
-    ResolveError(#[from] ResolveError),
+    ResolveError(#[from] hickory_resolver::net::NetError),
     #[error("no IP address found")]
     NoIp,
 }

@@ -10,11 +10,11 @@ pub struct AppState {
     pub config: Config,
     pub ping: Mutex<EndpointState<PingResult>>,
     pub speedtest: Mutex<EndpointState<SpeedtestResult>>,
-    pub resolver: TokioAsyncResolver,
+    pub resolver: crate::Resolver,
 }
 
 impl AppState {
-    pub fn new(config: Config, resolver: TokioAsyncResolver) -> Self {
+    pub fn new(config: Config, resolver: crate::Resolver) -> Self {
         Self {
             config,
             ping: Default::default(),

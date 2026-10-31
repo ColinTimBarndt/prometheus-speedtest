@@ -12,36 +12,36 @@ keywords = ["speedtest", "ping", "prometheus", "telemetry", "metrics"]
 
 [dependencies]
 accept-header = "0.2.3"
-async-trait = "0.1.79"
-axum = { version = "0.7.5", default-features = false, features = [
+async-trait = "0.1.92"
+axum = { version = "0.8.9", default-features = false, features = [
   "http1",
   "tokio",
   "tracing",
 ] }
-clap = { version = "4.5.4", features = ["derive"] }
-hdrhistogram = "7.5.4"
-hickory-resolver = { version = "0.24.0", features = ["system-config"] }
-http = "1.1.0"
+clap = { version = "4.6.7", features = ["derive"] }
+hdrhistogram = "7.6.0"
+hickory-resolver = { version = "0.26.3", features = ["system-config"] }
+http = "1.5.0"
 humantime-serde = "1.1.1"
-lazy_static = "1.4.0"
+lazy_static = "1.5.1"
 mime = "0.3.17"
-palette = { version = "0.7.5", default-features = false, features = ["std"] }
+palette = { version = "0.7.7", default-features = false, features = ["std"] }
 prometheus = "0.14.0"
-rand = "0.8.5"
-reqwest = { version = "0.12.2", features = ["stream"] }
-serde = { version = "1.0.197", features = ["derive"] }
-serde_json = "1.0.115"
-surge-ping = "0.8.1"
-thiserror = "1.0.58"
-tokio = { version = "1.37.0", features = [
+rand = "0.10.3"
+reqwest = { version = "0.13.5", features = ["stream"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+surge-ping = "0.9.1"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = [
   "net",
   "macros",
   "signal",
   "rt-multi-thread",
 ] }
-tokio-stream = "0.1.15"
-toml = "0.8.12"
-tracing = "0.1.40"
-tracing-subscriber = "0.3.18"
+tokio-stream = "0.1.19"
+toml = "1.1.8"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
 typed-arena = "2.0.2"
-url = { version = "2.5.0", features = ["serde"] }
+url = { version = "2.5.8", features = ["serde"] }
