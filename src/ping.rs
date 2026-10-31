@@ -214,7 +214,7 @@ pub struct PingSummary {
     pub stddev: f64,
     pub sum: f64,
     pub count: usize,
-    pub loss_percent: f64,
+    pub loss_ratio: f64,
     #[serde(serialize_with = "serialize_error_kind_map")]
     pub errors: HashMap<PingErrorKind, u32>,
 }
@@ -270,7 +270,7 @@ impl PingSummary {
                 stddev: f64::NAN,
                 sum: f64::NAN,
                 count: 0,
-                loss_percent: 1.,
+                loss_ratio: 1.,
             };
         }
 
@@ -297,7 +297,7 @@ impl PingSummary {
                 .sqrt(),
             sum,
             count: n,
-            loss_percent: lost_packets as f64 / total_packets as f64,
+            loss_ratio: lost_packets as f64 / total_packets as f64,
             errors: error_buckets,
         }
     }

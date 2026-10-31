@@ -41,7 +41,7 @@ impl<T> Default for EndpointState<T> {
 impl<T> EndpointState<T> {
     pub fn should_use_cache(&self, cache_duration: Duration) -> bool {
         self.last_measurement
-            .map(|last| last.elapsed() > cache_duration)
+            .map(|last| last.elapsed() <= cache_duration)
             .unwrap_or_default()
     }
 }

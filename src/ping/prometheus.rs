@@ -3,12 +3,13 @@ use prometheus::proto::{MetricFamily, MetricType};
 use crate::{
     ping::{PingResult, PingSummary},
     prometheus::{
-        FamilyInfo, MetricInfo, SummaryData, create_family, create_gauge, create_summary,
+        FamilyInfo, MetricInfo, RangeToPrometheus, SummaryData, create_family, create_gauge,
+        create_summary,
     },
 };
 
-impl PingResult {
-    pub fn range_to_prometheus(range: &[Self]) -> Vec<MetricFamily> {
+impl RangeToPrometheus for PingResult {
+    fn range_to_prometheus(range: &[Self]) -> Vec<MetricFamily> {
         let mut metrics = PrometheusMetrics::new();
         for result in range {
             metrics.add_result(result);
@@ -100,7 +101,7 @@ impl PrometheusMetrics {
 
         self.packet_loss.metric.push(create_gauge(
             MetricInfo::new(&mut std::iter::once(label())),
-            summary.loss_percent,
+            summary.loss_ratio,
         ));
 
         self.ping_errors

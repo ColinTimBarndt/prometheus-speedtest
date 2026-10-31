@@ -1,6 +1,6 @@
 use std::{
     fs, io,
-    net::{IpAddr, Ipv4Addr},
+    net::{IpAddr, Ipv6Addr},
     path::PathBuf,
     time::Duration,
 };
@@ -70,7 +70,7 @@ pub(crate) struct ServerConfig {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            address: Ipv4Addr::UNSPECIFIED.into(),
+            address: Ipv6Addr::UNSPECIFIED.into(),
             port: 9090,
         }
     }

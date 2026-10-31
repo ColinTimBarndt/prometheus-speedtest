@@ -2,13 +2,14 @@ use prometheus::proto::{MetricFamily, MetricType};
 
 use crate::{
     prometheus::{
-        FamilyInfo, MetricInfo, SummaryData, create_family, create_gauge, create_summary,
+        FamilyInfo, MetricInfo, RangeToPrometheus, SummaryData, create_family, create_gauge,
+        create_summary,
     },
     speedtest::{SpeedtestResult, SpeedtestSummary},
 };
 
-impl SpeedtestResult {
-    pub fn range_to_prometheus(range: &[Self]) -> Vec<MetricFamily> {
+impl RangeToPrometheus for SpeedtestResult {
+    fn range_to_prometheus(range: &[Self]) -> Vec<MetricFamily> {
         let mut metrics = PrometheusMetrics::new();
         for result in range {
             metrics.add_result(result);

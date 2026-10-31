@@ -1,7 +1,9 @@
 use std::{net::SocketAddr, process::ExitCode, sync::Arc, time::Instant};
 
+use ::prometheus::Encoder;
 use axum::{
     Router,
+    body::Body,
     extract::State,
     response::{IntoResponse, Response},
     routing::get,
@@ -10,14 +12,13 @@ use config::load_config;
 use http::{HeaderMap, StatusCode, header};
 use lazy_static::lazy_static;
 use mime::{
-    APPLICATION, APPLICATION_JSON, HTML, JSON, Mime, PLAIN, TEXT, TEXT_HTML, TEXT_HTML_UTF_8,
-    TEXT_PLAIN,
+    APPLICATION, APPLICATION_JSON, HTML, JSON, Mime, Name, PLAIN, TEXT, TEXT_HTML, TEXT_HTML_UTF_8,
+    TEXT_PLAIN, UTF_8,
 };
 use tokio::net::TcpListener;
 
 use crate::{
-    ping::{PingResult, perform_ping},
-    speedtest::{SpeedtestResult, perform_speedtest},
+    ping::perform_ping, prometheus::RangeToPrometheus, speedtest::perform_speedtest,
     state::AppState,
 };
 
@@ -30,6 +31,11 @@ mod state;
 lazy_static! {
     static ref TEXT_PLAIN_UTF_8_VERSION_4: Mime =
         "text/plain; version=0.0.4; charset=utf-8".parse().unwrap();
+    static ref APPLICATION_PROTOBUF_PROMETHEUS: Mime =
+        "application/vnd.google.protobuf; proto=io.prometheus.client.MetricFamily; encoding=delimited".parse().unwrap();
+    static ref APPLICATION_PROTOBUF: Mime =
+        "application/vnd.google.protobuf".parse().unwrap();
+    static ref PROTOBUF: Name<'static> = APPLICATION_PROTOBUF_PROMETHEUS.subtype();
 }
 
 pub type Resolver = hickory_resolver::TokioResolver;
@@ -157,83 +163,86 @@ fn negotiate_prometheus_mime(headers: &HeaderMap) -> Result<Mime, StatusCode> {
         .and_then(|it| it.parse::<accept_header::Accept>().ok())
     {
         accept
-            .negotiate(&[TEXT_PLAIN, APPLICATION_JSON])
+            .negotiate(&[TEXT_PLAIN, APPLICATION_JSON, APPLICATION_PROTOBUF.clone()])
             .map_err(|code| StatusCode::from_u16(code.as_u16()).unwrap())?
     } else {
         TEXT_PLAIN_UTF_8_VERSION_4.clone()
     };
-    if response_type.type_() == TEXT && response_type.get_param("version").is_none() {
-        TEXT_PLAIN_UTF_8_VERSION_4.clone_into(&mut response_type);
+    if response_type.type_() == TEXT {
+        match response_type.get_param("version") {
+            Some(UTF_8) => (),
+            _ => TEXT_PLAIN_UTF_8_VERSION_4.clone_into(&mut response_type),
+        }
     } else if response_type == TEXT_HTML {
         response_type = TEXT_HTML_UTF_8;
+    } else if &response_type == &*APPLICATION_PROTOBUF {
+        APPLICATION_PROTOBUF_PROMETHEUS.clone_into(&mut response_type)
     }
     Ok(response_type)
 }
 
-async fn get_ping(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response<String> {
+fn encode_prometheus_response<T>(response_type: &Mime, data: &[T]) -> Response<Body>
+where
+    T: RangeToPrometheus + serde::Serialize,
+{
+    let response: Vec<u8> = match (response_type.type_(), response_type.subtype()) {
+        (TEXT, PLAIN) => ::prometheus::TextEncoder::new()
+            .encode_to_string(&T::range_to_prometheus(data))
+            .expect("Prometheus text encoding")
+            .into_bytes(),
+        (APPLICATION, ref sub) if sub == &*PROTOBUF => {
+            let mut buf = Vec::new();
+            ::prometheus::ProtobufEncoder::new()
+                .encode(&T::range_to_prometheus(data), &mut buf)
+                .expect("Prometheus Protobuf encoding");
+            buf
+        }
+        (APPLICATION, JSON) => serde_json::to_string_pretty(data)
+            .expect("JSON encoding")
+            .into_bytes(),
+        _ => unreachable!(),
+    };
+
+    Response::builder()
+        .header(header::CONTENT_TYPE, response_type.as_ref())
+        .status(StatusCode::OK)
+        .body(Body::from(response))
+        .unwrap()
+}
+
+async fn get_ping(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl IntoResponse {
     let response_type = match negotiate_prometheus_mime(&headers) {
         Ok(ty) => ty,
-        Err(code) => {
-            return Response::builder()
-                .status(code)
-                .body(String::new())
-                .unwrap();
-        }
+        Err(code) => return code.into_response(),
     };
 
     let state2 = state.clone();
     let mut ping_state = state2.ping.lock().await;
     if !ping_state.should_use_cache(state.config.ping.cooldown) {
-        ping_state.metrics = perform_ping(state).await;
         ping_state.last_measurement = Some(Instant::now());
+        ping_state.metrics = perform_ping(state).await;
     };
     let data = &ping_state.metrics[..];
 
-    let response = match (response_type.type_(), response_type.subtype()) {
-        (TEXT, PLAIN) => ::prometheus::TextEncoder::new()
-            .encode_to_string(&PingResult::range_to_prometheus(&data))
-            .expect("Prometheus encoding"),
-        (APPLICATION, JSON) => serde_json::to_string_pretty(&data).unwrap(),
-        _ => unreachable!(),
-    };
-
-    Response::builder()
-        .header(header::CONTENT_TYPE, response_type.as_ref())
-        .status(StatusCode::OK)
-        .body(response)
-        .unwrap()
+    encode_prometheus_response(&response_type, data)
 }
 
-async fn get_speedtest(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response<String> {
+async fn get_speedtest(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
     let response_type = match negotiate_prometheus_mime(&headers) {
         Ok(ty) => ty,
-        Err(code) => {
-            return Response::builder()
-                .status(code)
-                .body(String::new())
-                .unwrap();
-        }
+        Err(code) => return code.into_response(),
     };
 
     let state2 = state.clone();
     let mut speedtest_state = state2.speedtest.lock().await;
     if !speedtest_state.should_use_cache(state.config.speedtest.cooldown) {
-        speedtest_state.metrics = perform_speedtest(state).await;
         speedtest_state.last_measurement = Some(Instant::now());
+        speedtest_state.metrics = perform_speedtest(state).await;
     };
     let data = &speedtest_state.metrics[..];
 
-    let response = match (response_type.type_(), response_type.subtype()) {
-        (TEXT, PLAIN) => ::prometheus::TextEncoder::new()
-            .encode_to_string(&SpeedtestResult::range_to_prometheus(&data))
-            .expect("Prometheus encoding"),
-        (APPLICATION, JSON) => serde_json::to_string_pretty(&data).unwrap(),
-        _ => unreachable!(),
-    };
-
-    Response::builder()
-        .header(header::CONTENT_TYPE, response_type.as_ref())
-        .status(StatusCode::OK)
-        .body(response)
-        .unwrap()
+    encode_prometheus_response(&response_type, data)
 }

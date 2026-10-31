@@ -1,6 +1,10 @@
 use std::time::SystemTime;
 
-use prometheus::proto as p;
+use prometheus::proto::{self as p, MetricFamily};
+
+pub trait RangeToPrometheus: Sized {
+    fn range_to_prometheus(range: &[Self]) -> Vec<MetricFamily>;
+}
 
 pub struct FamilyInfo<'a> {
     pub name: &'a str,
