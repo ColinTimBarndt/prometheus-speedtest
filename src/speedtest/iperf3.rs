@@ -40,8 +40,8 @@ pub struct Iperf3SpeedtestProvider {
         default = "Iperf3SpeedtestProvider::default_warmup_time"
     )]
     pub warmup_time: Duration,
-    #[serde(default)]
-    pub bitrate: u32,
+    #[serde(default, with = "crate::humanbits")]
+    pub bitrate: u64,
     #[serde(default = "Iperf3SpeedtestProvider::default_parallel")]
     pub parallel: NonZeroU32,
     #[serde(default)]

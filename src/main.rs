@@ -27,6 +27,7 @@ pub mod ping;
 pub mod prometheus;
 pub mod speedtest;
 mod state;
+mod humanbits;
 
 lazy_static! {
     static ref TEXT_PLAIN_UTF_8_VERSION_4: Mime =
