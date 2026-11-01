@@ -42,7 +42,7 @@ pub type Resolver = hickory_resolver::TokioResolver;
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    println!("{}", include_str!("startup-notice.txt"));
+    eprintln!("{}", include_str!("startup-notice.txt"));
 
     tracing_subscriber::fmt::init();
 
