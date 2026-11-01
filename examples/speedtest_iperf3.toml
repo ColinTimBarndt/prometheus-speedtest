@@ -16,3 +16,8 @@ iperf3 = "/usr/bin/iperf3"
 
 [[speedtest.provider.server]]
 host = "localhost"
+# port = 5201
+
+# [[speedtest.provider.server]]
+# host = "localhost"
+# port = 5202
