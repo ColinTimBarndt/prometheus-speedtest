@@ -1,5 +1,6 @@
 use std::{
-    fs, io,
+    fs,
+    io::{self, Write},
     net::{IpAddr, Ipv6Addr},
     path::PathBuf,
     time::Duration,
@@ -16,8 +17,15 @@ use crate::{
 pub(crate) fn load_config() -> io::Result<Config> {
     let args = Args::parse();
 
-    if let Some(Command::PrintDefaultConfig) = args.command {
-        println!("{}", toml::to_string_pretty(&Config::default()).unwrap());
+    if let Some(command) = args.command {
+        let print = match command {
+            Command::PrintDefaultConfig => &*toml::to_string_pretty(&Config::default())
+                .unwrap()
+                .into_bytes()
+                .leak(),
+            Command::License => include_bytes!("../LICENSE.md"),
+        };
+        _ = std::io::stdout().write_all(print);
         std::process::exit(0);
     }
 
@@ -53,6 +61,8 @@ pub(crate) struct Args {
 pub(crate) enum Command {
     /// Prints the default configuration file and exits
     PrintDefaultConfig,
+    /// Prints the license and exits
+    License,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
