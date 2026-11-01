@@ -1,0 +1,18 @@
+[speedtest]
+
+[[speedtest.provider]]
+type = "iperf3"
+target_name = "Localhost"
+# optional
+download_duration = "10s"
+upload_duration = "10s"
+warmup_time = "1s"
+bitrate = 1_000_000_000
+parallel = 2
+# rsa_public_key_path = "public.pem"
+# username = ""
+# password = ""
+iperf3 = "/usr/bin/iperf3"
+
+[[speedtest.provider.server]]
+host = "localhost"

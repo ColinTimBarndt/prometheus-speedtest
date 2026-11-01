@@ -43,14 +43,10 @@ impl SpeedtestProvider for HttpSpeedtestProvider {
             .map(|()| self.finish_measurements(locals));
         SpeedtestMeasurements {
             target: self.target_name.clone(),
-            up: up.map_err(format_debug),
-            down: down.map_err(format_debug),
+            up: up.map_err(crate::format_debug),
+            down: down.map_err(crate::format_debug),
         }
     }
-}
-
-fn format_debug(error: impl std::fmt::Debug) -> String {
-    format!("{error:?}")
 }
 
 struct MeasurementLocals {
@@ -89,6 +85,7 @@ impl HttpSpeedtestProvider {
                     .last_chunk_time
                     .duration_since(locals.start_time)
                     .as_secs_f64(),
+                packets: None,
             },
         }
     }
@@ -121,6 +118,7 @@ impl HttpSpeedtestProvider {
                             locals.samples.push(Sample {
                                 bytes: sample_bytes,
                                 seconds: now.duration_since(locals.last_chunk_time).as_secs_f64(),
+                                packets: None,
                             });
                             sample_bytes = 0.;
                             locals.last_chunk_time = now;
@@ -151,6 +149,7 @@ impl HttpSpeedtestProvider {
             locals.samples.push(Sample {
                 bytes: size,
                 seconds: now.duration_since(locals.last_chunk_time).as_secs_f64(),
+                packets: None,
             });
             locals.total_bytes += size;
             locals.last_chunk_time = now;

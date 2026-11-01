@@ -1,5 +1,6 @@
 use std::{
     iter::Sum,
+    num::NonZeroU32,
     ops::{self, Div},
     sync::Arc,
 };
@@ -7,11 +8,12 @@ use std::{
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::state::AppState;
+use crate::{HistogramData, speedtest::iperf3::Iperf3SpeedtestProvider, state::AppState};
 
 use self::http::HttpSpeedtestProvider;
 
 pub mod http;
+pub mod iperf3;
 mod prometheus;
 
 pub(crate) async fn perform_speedtest(state: Arc<AppState>) -> Vec<SpeedtestResult> {
@@ -22,7 +24,11 @@ pub(crate) async fn perform_speedtest(state: Arc<AppState>) -> Vec<SpeedtestResu
     measurements
         .into_iter()
         .map(|measurements| {
-            SpeedtestResult::digest_measurements(measurements, &state.config.speedtest.quantiles)
+            SpeedtestResult::digest_measurements(
+                measurements,
+                &state.config.speedtest.speed_quantiles,
+                &state.config.speedtest.packet_loss_quantiles,
+            )
         })
         .collect()
 }
@@ -42,12 +48,26 @@ pub struct SpeedtestMeasurements {
 pub struct SpeedtestSample {
     pub bytes: f64,
     pub seconds: f64,
+    pub packets: Option<SpeedtestSamplePackets>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SpeedtestSamplePackets {
+    pub count: NonZeroU32,
+    pub lost: u32,
 }
 
 impl SpeedtestSample {
     /// Bits per second
     pub fn bps(&self) -> f64 {
         self.bytes / self.seconds * 8.
+    }
+
+    /// Packet loss ratio or NAN if not available.
+    pub fn loss(&self) -> f64 {
+        self.packets
+            .map(|p| p.lost as f64 / p.count.get() as f64)
+            .unwrap_or(f64::NAN)
     }
 }
 
@@ -58,6 +78,10 @@ impl ops::Add for SpeedtestSample {
         Self {
             bytes: self.bytes + rhs.bytes,
             seconds: self.seconds + rhs.seconds,
+            packets: match (self.packets, rhs.packets) {
+                (Some(l), Some(r)) => Some(l + r),
+                _ => None,
+            },
         }
     }
 }
@@ -65,6 +89,26 @@ impl ops::Add for SpeedtestSample {
 impl ops::AddAssign for SpeedtestSample {
     fn add_assign(&mut self, rhs: Self) {
         *self = *self + rhs;
+    }
+}
+
+impl ops::Add for SpeedtestSamplePackets {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        match self.count.checked_add(rhs.count.get()) {
+            // if the sum would overflow, pick the larger sample
+            None => {
+                core::hint::cold_path();
+                if self.count > rhs.count { self } else { rhs }
+            }
+            Some(count) => Self {
+                count,
+                // lost is always <= count and thus cannot overflow here
+                // since the sum of counts does not overflow.
+                lost: self.lost + rhs.lost,
+            },
+        }
     }
 }
 
@@ -87,6 +131,7 @@ pub trait SpeedtestProvider: Serialize + Deserialize<'static> + 'static {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StandardSpeedtestProvider {
     Http(HttpSpeedtestProvider),
+    Iperf3(Iperf3SpeedtestProvider),
 }
 
 #[async_trait]
@@ -94,6 +139,7 @@ impl SpeedtestProvider for StandardSpeedtestProvider {
     async fn measure(&self) -> SpeedtestMeasurements {
         match self {
             Self::Http(p) => p.measure(),
+            Self::Iperf3(p) => p.measure(),
         }
         .await
     }
@@ -113,10 +159,21 @@ pub struct SpeedtestResult {
 }
 
 impl SpeedtestResult {
-    pub fn digest_measurements(measurements: SpeedtestMeasurements, quantiles: &[f64]) -> Self {
+    pub fn digest_measurements(
+        measurements: SpeedtestMeasurements,
+        speed_quantiles: &[f64],
+        packet_loss_quantiles: &[f64],
+    ) -> Self {
         let [(up_summary, up_error), (down_summary, down_error)] =
             [measurements.up, measurements.down].map(|r| match r {
-                Ok(d) => (Some(SpeedtestSummary::digest_data(d, quantiles)), None),
+                Ok(ref d) => (
+                    Some(SpeedtestSummary::digest_data(
+                        d,
+                        speed_quantiles,
+                        packet_loss_quantiles,
+                    )),
+                    None,
+                ),
                 Err(e) => (None, Some(e)),
             });
         Self {
@@ -131,33 +188,82 @@ impl SpeedtestResult {
 
 #[derive(Debug, Serialize)]
 pub struct SpeedtestSummary {
-    pub quantiles: Vec<(f64, f64)>,
-    pub mean: f64,
-    pub stddev: f64,
-    pub sum: f64,
-    pub count: usize,
+    pub speed: HistogramData,
+    pub packet_loss: Option<HistogramData>,
 }
 
 impl SpeedtestSummary {
     pub fn digest_data(
-        SpeedtestData { mut samples, total }: SpeedtestData,
-        quantiles: &[f64],
+        SpeedtestData { samples, total }: &SpeedtestData,
+        speed_quantiles: &[f64],
+        packet_loss_quantiles: &[f64],
     ) -> Self {
-        samples.sort_unstable_by(|a, b| a.bps().total_cmp(&b.bps()));
+        SpeedtestSummary {
+            speed: Self::digest_weighted_histogram(
+                samples,
+                total,
+                speed_quantiles,
+                |s| s.seconds,
+                SpeedtestSample::bps,
+            ),
+            packet_loss: Self::digest_packet_loss(samples, total, packet_loss_quantiles),
+        }
+    }
+
+    fn digest_packet_loss(
+        samples: &[SpeedtestSample],
+        total: &SpeedtestSample,
+        quantiles: &[f64],
+    ) -> Option<HistogramData> {
+        if samples.iter().any(|s| s.packets.is_none()) {
+            return None;
+        }
+        Some(Self::digest_weighted_histogram(
+            samples,
+            total,
+            quantiles,
+            |s| s.packets.unwrap().count.get() as f64,
+            SpeedtestSample::loss,
+        ))
+    }
+
+    fn digest_weighted_histogram(
+        samples: &[SpeedtestSample],
+        total: &SpeedtestSample,
+        quantiles: &[f64],
+        get_weight: impl Fn(&SpeedtestSample) -> f64,
+        get_mean: impl Fn(&SpeedtestSample) -> f64,
+    ) -> HistogramData {
+        struct MappedSample {
+            weight: f64,
+            mean: f64,
+        }
+        let total = MappedSample {
+            weight: get_weight(total),
+            mean: get_mean(total),
+        };
+        let mut samples: Vec<_> = samples
+            .iter()
+            .map(|s| MappedSample {
+                weight: get_weight(s),
+                mean: get_mean(s),
+            })
+            .collect();
+        samples.sort_unstable_by(|a, b| a.mean.total_cmp(&b.mean));
 
         let mut quantiles_map = Vec::with_capacity(quantiles.len());
-        if !quantiles.is_empty() && total.seconds > 0. {
-            let mut covered_seconds = 0.;
+        if !quantiles.is_empty() && total.weight > 0. {
+            let mut covered_weight = 0.;
             let mut current_quantile = 0;
             'outer: for sample in samples.iter() {
                 // Weighted quantiles with C = 1/2
-                let current_seconds = covered_seconds + sample.seconds * 0.5;
-                covered_seconds += sample.seconds;
+                let current_weight = covered_weight + sample.weight * 0.5;
+                covered_weight += sample.weight;
 
                 loop {
                     let q = quantiles[current_quantile];
-                    if current_seconds / total.seconds >= q {
-                        quantiles_map.push((q, sample.bps().try_into().unwrap()));
+                    if current_weight / total.weight >= q {
+                        quantiles_map.push((q, sample.mean));
                         current_quantile += 1;
                         if current_quantile >= quantiles.len() {
                             break 'outer;
@@ -169,7 +275,7 @@ impl SpeedtestSummary {
             }
             // Remaining quantiles are >= 1.0
             if current_quantile < quantiles.len() {
-                let last = samples.last().unwrap().bps().try_into().unwrap();
+                let last = samples.last().unwrap().mean.try_into().unwrap();
                 for &q in &quantiles[current_quantile..] {
                     if q >= 1. {
                         quantiles_map.push((q, last));
@@ -178,24 +284,23 @@ impl SpeedtestSummary {
             }
         }
 
-        let mean = total.bps();
         let stddev = samples
             .iter()
             .map(|x| {
-                let diff = mean - x.bps();
-                x.seconds * (diff * diff)
+                let diff = total.mean - x.mean;
+                x.weight * (diff * diff)
             })
             .sum::<f64>()
-            .div(total.seconds)
+            .div(total.weight)
             .sqrt();
 
-        SpeedtestSummary {
+        HistogramData {
             quantiles: quantiles_map,
-            mean: mean.try_into().unwrap(),
+            mean: total.mean,
             stddev,
             sum: samples
                 .iter()
-                .map(SpeedtestSample::bps)
+                .map(|s| s.mean)
                 .sum::<f64>()
                 .try_into()
                 .unwrap(),

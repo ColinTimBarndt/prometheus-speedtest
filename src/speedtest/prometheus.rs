@@ -1,10 +1,7 @@
 use prometheus::proto::{MetricFamily, MetricType};
 
 use crate::{
-    prometheus::{
-        FamilyInfo, MetricInfo, RangeToPrometheus, SummaryData, create_family, create_gauge,
-        create_summary,
-    },
+    prometheus::{FamilyInfo, MetricInfo, RangeToPrometheus, create_family, create_gauge},
     speedtest::{SpeedtestResult, SpeedtestSummary},
 };
 
@@ -21,8 +18,11 @@ impl RangeToPrometheus for SpeedtestResult {
 struct PrometheusMetrics {
     network_speed_bps: MetricFamily,
     network_speed_mean_bps: MetricFamily,
-    network_speed_stddev: MetricFamily,
-    speedtest_errors: MetricFamily,
+    network_speed_stddev_bps: MetricFamily,
+    packet_loss: MetricFamily,
+    packet_loss_mean: MetricFamily,
+    packet_loss_stddev: MetricFamily,
+    errors: MetricFamily,
 }
 
 impl PrometheusMetrics {
@@ -39,12 +39,27 @@ impl PrometheusMetrics {
                 ),
                 MetricType::GAUGE,
             ),
-            network_speed_stddev: create_family(
-                FamilyInfo::new("network_speed_stddev", "network speed standard deviation"),
+            network_speed_stddev_bps: create_family(
+                FamilyInfo::new(
+                    "network_speed_stddev_bps",
+                    "network speed standard deviation",
+                ),
                 MetricType::GAUGE,
             ),
-            speedtest_errors: create_family(
-                FamilyInfo::new("ping_errors", "number of ping errors"),
+            packet_loss: create_family(
+                FamilyInfo::new("packet_loss", "packet loss ratio"),
+                MetricType::SUMMARY,
+            ),
+            packet_loss_mean: create_family(
+                FamilyInfo::new("packet_loss_mean", "mean packet loss"),
+                MetricType::GAUGE,
+            ),
+            packet_loss_stddev: create_family(
+                FamilyInfo::new("packet_loss_stddev", "packet loss standard deviation"),
+                MetricType::GAUGE,
+            ),
+            errors: create_family(
+                FamilyInfo::new("errors", "number of speedtest errors"),
                 MetricType::GAUGE,
             ),
         }
@@ -54,8 +69,11 @@ impl PrometheusMetrics {
         let mut results = vec![
             self.network_speed_bps,
             self.network_speed_mean_bps,
-            self.network_speed_stddev,
-            self.speedtest_errors,
+            self.network_speed_stddev_bps,
+            self.packet_loss,
+            self.packet_loss_mean,
+            self.packet_loss_stddev,
+            self.errors,
         ];
         results.retain(|f| !f.metric.is_empty());
         results
@@ -71,7 +89,7 @@ impl PrometheusMetrics {
             self.add_summary(&result.target, direction, summary);
         }
         for error in result.up_error.iter().chain(&result.down_error) {
-            self.speedtest_errors.metric.push(create_gauge(
+            self.errors.metric.push(create_gauge(
                 MetricInfo::new(&mut [("error".to_owned(), error.to_owned()), label()].into_iter()),
                 1.,
             ));
@@ -86,21 +104,19 @@ impl PrometheusMetrics {
             ]
             .into_iter()
         };
-        self.network_speed_bps.metric.push(create_summary(
-            MetricInfo::new(&mut labels()),
-            SummaryData {
-                count: summary.count as u64,
-                sum: summary.sum,
-                quantiles: &mut summary.quantiles.iter().copied(),
-            },
-        ));
-
-        self.network_speed_mean_bps
-            .metric
-            .push(create_gauge(MetricInfo::new(&mut labels()), summary.mean));
-
-        self.network_speed_stddev
-            .metric
-            .push(create_gauge(MetricInfo::new(&mut labels()), summary.stddev));
+        summary.speed.add_to_prometheus(
+            labels,
+            &mut self.network_speed_bps,
+            &mut self.network_speed_mean_bps,
+            &mut self.network_speed_stddev_bps,
+        );
+        if let Some(loss) = &summary.packet_loss {
+            loss.add_to_prometheus(
+                labels,
+                &mut self.packet_loss,
+                &mut self.packet_loss_mean,
+                &mut self.packet_loss_stddev,
+            );
+        }
     }
 }

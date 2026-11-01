@@ -2,8 +2,38 @@ use std::time::SystemTime;
 
 use prometheus::proto::{self as p, MetricFamily};
 
+use crate::HistogramData;
+
 pub trait RangeToPrometheus: Sized {
     fn range_to_prometheus(range: &[Self]) -> Vec<MetricFamily>;
+}
+
+impl HistogramData {
+    pub fn add_to_prometheus<L>(
+        &self,
+        labels: impl FnOnce() -> L + Copy,
+        summary: &mut MetricFamily,
+        mean: &mut MetricFamily,
+        stddev: &mut MetricFamily,
+    ) where
+        L: Iterator<Item = (String, String)>,
+    {
+        summary.metric.push(create_summary(
+            MetricInfo::new(&mut labels()),
+            SummaryData {
+                count: self.count as u64,
+                sum: self.sum,
+                quantiles: &mut self.quantiles.iter().copied(),
+            },
+        ));
+
+        mean.metric
+            .push(create_gauge(MetricInfo::new(&mut labels()), self.mean));
+
+        stddev
+            .metric
+            .push(create_gauge(MetricInfo::new(&mut labels()), self.stddev));
+    }
 }
 
 pub struct FamilyInfo<'a> {

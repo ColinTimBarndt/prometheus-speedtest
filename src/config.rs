@@ -30,7 +30,7 @@ pub(crate) fn load_config() -> io::Result<Config> {
 
     config
         .speedtest
-        .quantiles
+        .speed_quantiles
         .sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
 
     Ok(config)
@@ -114,7 +114,8 @@ pub(crate) struct SpeedtestConfig {
     pub cooldown: Duration,
     #[serde(rename = "provider")]
     pub providers: Vec<StandardSpeedtestProvider>,
-    pub quantiles: Vec<f64>,
+    pub speed_quantiles: Vec<f64>,
+    pub packet_loss_quantiles: Vec<f64>,
 }
 
 impl Default for SpeedtestConfig {
@@ -134,7 +135,8 @@ impl Default for SpeedtestConfig {
                 upload_duration: Duration::from_secs(30),
                 upload_chunk_size: 1_000_000,
             })],
-            quantiles: vec![0., 0.25, 0.5, 0.75, 0.9, 0.99, 1.],
+            speed_quantiles: vec![0., 0.25, 0.5, 0.75, 0.9, 0.99, 1.],
+            packet_loss_quantiles: vec![0., 0.25, 0.5, 0.75, 0.9, 0.99, 1.],
         }
     }
 }

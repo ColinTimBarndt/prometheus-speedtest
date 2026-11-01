@@ -246,3 +246,16 @@ async fn get_speedtest(
 
     encode_prometheus_response(&response_type, data)
 }
+
+fn format_debug(error: impl std::fmt::Debug) -> String {
+    format!("{error:?}")
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct HistogramData {
+    pub quantiles: Vec<(f64, f64)>,
+    pub mean: f64,
+    pub stddev: f64,
+    pub sum: f64,
+    pub count: usize,
+}
