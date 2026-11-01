@@ -11,7 +11,7 @@ use surge_ping::{IcmpPacket, PingIdentifier, PingSequence, SurgeError};
 use thiserror::Error;
 use tokio::task::JoinSet;
 
-use crate::{Resolver, state::AppState};
+use crate::{HistogramData, Resolver, state::AppState};
 
 pub(crate) async fn perform_ping(state: Arc<AppState>) -> Vec<PingResult> {
     let mut payload = vec![0; state.config.ping.payload_size].into_boxed_slice();
@@ -218,11 +218,7 @@ fn serialize_error_kind<S: Serializer>(
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PingSummary {
-    pub quantiles: Vec<(f64, f64)>,
-    pub mean_ms: f64,
-    pub stddev: f64,
-    pub sum: f64,
-    pub count: usize,
+    pub ping: HistogramData,
     pub loss_ratio: f64,
     #[serde(serialize_with = "serialize_error_kind_map")]
     pub errors: HashMap<PingErrorKind, u32>,
@@ -274,12 +270,14 @@ impl PingSummary {
         if samples.is_empty() {
             return Self {
                 errors: error_buckets,
-                quantiles: Vec::new(),
-                mean_ms: f64::NAN,
-                stddev: f64::NAN,
-                sum: f64::NAN,
-                count: 0,
-                loss_ratio: 1.,
+                ping: HistogramData {
+                    quantiles: Vec::new(),
+                    mean: f64::NAN,
+                    stddev: f64::NAN,
+                    sum: f64::NAN,
+                    count: 0,
+                },
+                loss_ratio: f64::NAN,
             };
         }
 
@@ -292,20 +290,22 @@ impl PingSummary {
         let sum = samples.iter().sum();
         let mean_ms = sum / (n as f64);
         Self {
-            quantiles: quantiles
-                .iter()
-                .cloned()
-                .map(|q| (q, hist.value_at_quantile(q) as f64 / 16.))
-                .collect(),
-            mean_ms,
-            stddev: samples
-                .iter()
-                .map(|val| (*val - mean_ms).powi(2))
-                .sum::<f64>()
-                .div(n as f64)
-                .sqrt(),
-            sum,
-            count: n,
+            ping: HistogramData {
+                quantiles: quantiles
+                    .iter()
+                    .cloned()
+                    .map(|q| (q, hist.value_at_quantile(q) as f64 / 16.))
+                    .collect(),
+                mean: mean_ms,
+                stddev: samples
+                    .iter()
+                    .map(|val| (*val - mean_ms).powi(2))
+                    .sum::<f64>()
+                    .div(n as f64)
+                    .sqrt(),
+                sum,
+                count: n,
+            },
             loss_ratio: lost_packets as f64 / total_packets as f64,
             errors: error_buckets,
         }

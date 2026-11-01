@@ -251,7 +251,7 @@ fn format_debug(error: impl std::fmt::Debug) -> String {
     format!("{error:?}")
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, Clone)]
 pub struct HistogramData {
     pub quantiles: Vec<(f64, f64)>,
     pub mean: f64,
