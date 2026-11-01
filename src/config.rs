@@ -28,10 +28,13 @@ pub(crate) fn load_config() -> io::Result<Config> {
         Config::default()
     };
 
-    config
-        .speedtest
-        .speed_quantiles
-        .sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+    for quantiles in [
+        &mut config.ping.quantiles,
+        &mut config.speedtest.speed_quantiles,
+        &mut config.speedtest.packet_loss_quantiles,
+    ] {
+        quantiles.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+    }
 
     Ok(config)
 }
